@@ -1,0 +1,15 @@
+{
+  "name": "prueba-coderabbit",
+  "version": "1.0.0",
+  "description": "Demo app para prueba de CodeRabbit",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "sqlite3": "^5.1.6",
+    "bcrypt": "^5.1.0"
+  }
+}
