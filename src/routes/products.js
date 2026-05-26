@@ -77,6 +77,9 @@ router.put('/:id', (req, res) => {
   if (price !== undefined && (isNaN(Number(price)) || Number(price) < 0)) {
     return res.status(400).json({ error: 'Precio inválido' });
   }
+  if (stock !== undefined && (!Number.isInteger(Number(stock)) || Number(stock) < 0)) {
+    return res.status(400).json({ error: 'Stock inválido' });
+  }
 
   db.run(
     `UPDATE products SET
