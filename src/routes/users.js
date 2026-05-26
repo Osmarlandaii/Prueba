@@ -1,49 +1,117 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const { verifyJWT } = require('../middleware/auth');
 
-// SQL INJECTION: búsqueda con concatenación directa
-router.get('/search', (req, res) => {
-  const { name, role } = req.query;
-  // Concatena directamente el input del usuario
-  const query = `SELECT id, username, email, role FROM users WHERE username LIKE '%${name}%' OR role = '${role}'`;
+// SEARCH — fix SQL injection con query parametrizada
+router.get('/search', verifyJWT, (req, res) => {
+  const { name = '', role = '' } = req.query;
 
-  db.all(query, [], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json(rows);
-  });
+  db.all(
+    'SELECT id, username, email, role FROM users WHERE username LIKE ? OR role = ?',
+    [`%${name}%`, role],
+    (err, rows) => {
+      if (err) {
+        console.error('search error:', err);
+        return res.status(500).json({ error: 'Error interno del servidor' });
+      }
+      res.json(rows);
+    }
+  );
 });
 
-// IDOR: cualquiera puede ver datos de cualquier usuario sin verificar autenticación
-router.get('/:id', (req, res) => {
-  // Expone password junto con todos los datos
-  db.get('SELECT * FROM users WHERE id = ?', [req.params.id], (err, row) => {
-    if (err) return res.status(500).json({ error: err.message });
-    if (!row) return res.status(404).json({ error: 'Usuario no encontrado' });
-    res.json(row); // devuelve password en la respuesta
-  });
+// GET /:id — fix IDOR + password expuesto; requiere auth + ownership
+router.get('/:id', verifyJWT, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'ID inválido' });
+
+  // Solo el propio usuario o un admin puede ver el perfil
+  if (req.user.id !== id && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Acceso denegado' });
+  }
+
+  // Selecciona campos específicos — nunca devuelve password
+  db.get(
+    'SELECT id, username, email, role FROM users WHERE id = ?',
+    [id],
+    (err, row) => {
+      if (err) {
+        console.error('get user error:', err);
+        return res.status(500).json({ error: 'Error interno del servidor' });
+      }
+      if (!row) return res.status(404).json({ error: 'Usuario no encontrado' });
+      res.json(row);
+    }
+  );
 });
 
-// Sin autenticación ni autorización
-router.delete('/:id', (req, res) => {
-  db.run('DELETE FROM users WHERE id = ?', [req.params.id], function (err) {
-    if (err) return res.status(500).json({ error: err.message });
+// DELETE /:id — requiere auth + solo admin o el propio usuario
+router.delete('/:id', verifyJWT, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'ID inválido' });
+
+  if (req.user.id !== id && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Acceso denegado' });
+  }
+
+  db.run('DELETE FROM users WHERE id = ?', [id], function (err) {
+    if (err) {
+      console.error('delete user error:', err);
+      return res.status(500).json({ error: 'Error interno del servidor' });
+    }
     res.json({ deleted: this.changes });
   });
 });
 
-// Actualiza sin validar ownership
-router.put('/:id', (req, res) => {
+// PUT /:id — fix SQL injection + escalada de rol; requiere auth
+router.put('/:id', verifyJWT, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'ID inválido' });
+
+  if (req.user.id !== id && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Acceso denegado' });
+  }
+
   const { username, email, role } = req.body;
-  // Permite cambiar el rol a cualquier valor sin verificar permisos
-  db.run(
-    `UPDATE users SET username='${username}', email='${email}', role='${role}' WHERE id=${req.params.id}`,
-    [],
-    function (err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ updated: this.changes });
-    }
-  );
+
+  if (!username || typeof username !== 'string' || username.trim().length === 0) {
+    return res.status(400).json({ error: 'Nombre de usuario inválido' });
+  }
+  if (!email || typeof email !== 'string' || !email.includes('@')) {
+    return res.status(400).json({ error: 'Email inválido' });
+  }
+
+  // Solo un admin puede cambiar el rol; ignorar para usuarios normales
+  const VALID_ROLES = ['user', 'admin'];
+  const newRole = req.user.role === 'admin' && role && VALID_ROLES.includes(role)
+    ? role
+    : undefined;
+
+  if (newRole !== undefined) {
+    db.run(
+      'UPDATE users SET username = ?, email = ?, role = ? WHERE id = ?',
+      [username.trim(), email.trim(), newRole, id],
+      function (err) {
+        if (err) {
+          console.error('update user error:', err);
+          return res.status(500).json({ error: 'Error interno del servidor' });
+        }
+        res.json({ updated: this.changes });
+      }
+    );
+  } else {
+    db.run(
+      'UPDATE users SET username = ?, email = ? WHERE id = ?',
+      [username.trim(), email.trim(), id],
+      function (err) {
+        if (err) {
+          console.error('update user error:', err);
+          return res.status(500).json({ error: 'Error interno del servidor' });
+        }
+        res.json({ updated: this.changes });
+      }
+    );
+  }
 });
 
 module.exports = router;
